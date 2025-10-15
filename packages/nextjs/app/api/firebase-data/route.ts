@@ -1,57 +1,84 @@
 import { NextResponse } from "next/server";
+import { verifyMessage } from "viem";
 import { adminDb } from "~~/lib/firebaseAdmin";
 
-export async function GET(request: Request) {
+export async function POST(request: Request) {
   try {
-    const { searchParams } = new URL(request.url);
-    const collectionName =
-      searchParams.get("collection") || process.env.NEXT_PUBLIC_FIREBASE_COLLECTION || "production";
-    const documentId = searchParams.get("document");
+    const body = await request.json();
+    const { collection: collectionName, document: documentId, address, signature, message } = body;
 
-    console.log("[API] Fetching from collection:", collectionName);
-
-    // If documentId is provided, fetch a specific document
-    if (documentId) {
-      console.log("[API] Fetching document:", documentId);
-      const docSnapshot = await adminDb.collection(collectionName).doc(documentId).get();
-
-      if (!docSnapshot.exists) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Document '${documentId}' not found in collection '${collectionName}'`,
-          },
-          { status: 404 },
-        );
-      }
-
-      const documentData = {
-        id: docSnapshot.id,
-        ...docSnapshot.data(),
-      };
-
-      console.log("[API] Document data:", documentData);
-
-      return NextResponse.json({
-        success: true,
-        data: documentData,
-      });
+    if (!collectionName || !documentId || !address || !signature || !message) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Missing required parameters: collection, document, address, signature, and message",
+        },
+        { status: 400 },
+      );
     }
 
-    // Otherwise, fetch all documents in the collection
-    const snapshot = await adminDb.collection(collectionName).get();
+    console.log("[API] Verifying signature for address:", address);
 
-    const documents = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-    }));
+    // Verify the signature to ensure the user owns this address
+    const isValid = await verifyMessage({
+      address: address as `0x${string}`,
+      message,
+      signature: signature as `0x${string}`,
+    });
 
-    console.log("[API] Total documents found:", documents.length);
+    if (!isValid) {
+      console.log("[API] Invalid signature");
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Invalid signature. Please sign in with your wallet.",
+        },
+        { status: 401 },
+      );
+    }
+
+    console.log("[API] Signature verified. Fetching data for address:", address);
+    console.log("[API] Collection:", collectionName, "Document:", documentId);
+
+    // Fetch the document
+    const docSnapshot = await adminDb.collection(collectionName).doc(documentId).get();
+
+    if (!docSnapshot.exists) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Document '${documentId}' not found in collection '${collectionName}'`,
+        },
+        { status: 404 },
+      );
+    }
+
+    const documentData = docSnapshot.data();
+
+    // Filter to only return data for the authenticated address
+    const userKey = documentData?.[address];
+
+    if (userKey === undefined) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "No API key found for your address",
+        },
+        { status: 404 },
+      );
+    }
+
+    // Return only the user's data
+    const filteredData = {
+      id: docSnapshot.id,
+      [address]: userKey,
+    };
+
+    console.log("[API] Returning filtered data for address:", address);
 
     return NextResponse.json({
       success: true,
-      count: documents.length,
-      data: documents,
+      data: filteredData,
     });
   } catch (error: any) {
     console.error("[API] Error fetching Firebase data:", error);
