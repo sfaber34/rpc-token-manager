@@ -24,6 +24,8 @@
     "blo": "~1.2.0",
     "burner-connector": "0.0.18",
     "daisyui": "5.0.9",
+    "firebase": "^12.4.0",
+    "firebase-admin": "^13.5.0",
     "kubo-rpc-client": "~5.0.2",
     "next": "~15.2.3",
     "next-nprogress-bar": "~2.3.13",

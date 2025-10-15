@@ -22,4 +22,4 @@ node_modules
 # cli
 dist
 
-.env
+packages/nextjs/.env
