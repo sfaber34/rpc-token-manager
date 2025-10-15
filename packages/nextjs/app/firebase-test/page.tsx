@@ -1,78 +1,117 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { signIn, useSession } from "next-auth/react";
+import { SiweMessage } from "siwe";
 import { useAccount, useSignMessage } from "wagmi";
 
 export default function FirebaseTest() {
   const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isSigningIn, setIsSigningIn] = useState(false);
   const collectionName = process.env.NEXT_PUBLIC_FIREBASE_COLLECTION;
 
-  const { address, isConnected } = useAccount();
+  const { address, isConnected, chain } = useAccount();
   const { signMessageAsync } = useSignMessage();
+  const { data: session, status } = useSession();
+
+  const handleSignIn = async () => {
+    try {
+      if (!isConnected || !address || !chain) {
+        setError("Please connect your wallet first");
+        return;
+      }
+
+      setIsSigningIn(true);
+      setError(null);
+
+      // Get nonce from server
+      const nonceRes = await fetch("/api/auth/nonce");
+      const { nonce } = await nonceRes.json();
+
+      // Create SIWE message
+      const message = new SiweMessage({
+        domain: window.location.host,
+        address: address,
+        statement: "Sign in with Ethereum to access your RPC keys.",
+        uri: window.location.origin,
+        version: "1",
+        chainId: chain.id,
+        nonce: nonce,
+      });
+
+      const messageToSign = message.prepareMessage();
+
+      console.log("Requesting signature for SIWE...");
+      console.log("Message to sign:", messageToSign);
+
+      // Request user to sign the SIWE message
+      const signature = await signMessageAsync({ message: messageToSign });
+
+      console.log("Signature received, authenticating...");
+
+      // Authenticate with NextAuth
+      const result = await signIn("credentials", {
+        message: JSON.stringify(message),
+        signature,
+        redirect: false,
+      });
+
+      if (result?.error) {
+        throw new Error(result.error);
+      }
+
+      console.log("Successfully signed in!");
+      setIsSigningIn(false);
+    } catch (err: any) {
+      console.error("Error signing in:", err);
+      setError(err.message || "Failed to sign in");
+      setIsSigningIn(false);
+    }
+  };
+
+  const fetchData = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      console.log("Fetching data with session...");
+
+      // Fetch data using session (no signature needed)
+      const response = await fetch("/api/firebase-data", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          collection: collectionName,
+          document: "rpcKeys",
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!result.success) {
+        throw new Error(result.error);
+      }
+
+      console.log("Document data:", result.data);
+
+      setData(result.data);
+      setLoading(false);
+    } catch (err: any) {
+      console.error("Error fetching Firebase data:", err);
+      setError(err.message || "Failed to fetch data");
+      setLoading(false);
+    }
+  }, [collectionName]);
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setLoading(true);
-        setError(null);
-
-        if (!isConnected || !address) {
-          setError("Please connect your wallet to view your API keys");
-          setLoading(false);
-          return;
-        }
-
-        // Create a message to sign (with timestamp to prevent replay attacks)
-        const message = `Sign this message to access your RPC keys.\n\nTimestamp: ${Date.now()}`;
-
-        console.log("Requesting signature...");
-
-        // Request user to sign the message
-        const signature = await signMessageAsync({ message });
-
-        console.log("Signature received, fetching data...");
-
-        // Send the signature to the API for verification
-        const response = await fetch("/api/firebase-data", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            collection: collectionName,
-            document: "rpcKeys",
-            address,
-            signature,
-            message,
-          }),
-        });
-
-        const result = await response.json();
-
-        if (!result.success) {
-          throw new Error(result.error);
-        }
-
-        console.log("Document data:", result.data);
-
-        setData(result.data);
-        setLoading(false);
-      } catch (err: any) {
-        console.error("Error fetching Firebase data:", err);
-        setError(err.message || "Failed to fetch data");
-        setLoading(false);
-      }
-    };
-
-    if (isConnected && address) {
+    if (session && status === "authenticated") {
       fetchData();
-    } else {
-      setLoading(false);
-      setError("Please connect your wallet to view your API keys");
     }
-  }, [address, isConnected, collectionName, signMessageAsync]);
+  }, [session, status, fetchData]);
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -80,14 +119,31 @@ export default function FirebaseTest() {
 
       {!isConnected && (
         <div className="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded mb-4">
-          <strong>Connect Wallet:</strong> Please connect your wallet to view your API keys.
+          <strong>Connect Wallet:</strong> Please connect your wallet using the button in the header.
         </div>
       )}
 
       {isConnected && address && (
-        <p className="mb-6 text-gray-600">
-          Connected: <strong>{address}</strong>
-        </p>
+        <div className="mb-6">
+          <p className="text-gray-600">
+            Connected: <strong>{address}</strong>
+          </p>
+          <p className="text-sm text-gray-500 mt-2">
+            Session Status: <strong>{status === "authenticated" ? "Signed In ✓" : "Not Signed In"}</strong>
+          </p>
+        </div>
+      )}
+
+      {isConnected && status === "unauthenticated" && (
+        <div className="mb-6">
+          <button onClick={handleSignIn} disabled={isSigningIn} className="btn btn-primary btn-lg" type="button">
+            {isSigningIn ? "Signing In..." : "Sign In with Ethereum"}
+          </button>
+          <p className="text-sm text-gray-500 mt-2">
+            You&apos;ll be asked to sign a message to verify wallet ownership. This only needs to be done once per
+            session.
+          </p>
+        </div>
       )}
 
       {loading && <div className="text-lg">Loading your API keys...</div>}

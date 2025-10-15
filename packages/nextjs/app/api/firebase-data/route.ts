@@ -1,43 +1,38 @@
 import { NextResponse } from "next/server";
-import { verifyMessage } from "viem";
+import { auth } from "~~/lib/auth";
 import { adminDb } from "~~/lib/firebaseAdmin";
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const { collection: collectionName, document: documentId, address, signature, message } = body;
+    // Verify session
+    const session = await auth();
 
-    if (!collectionName || !documentId || !address || !signature || !message) {
+    if (!session?.user?.address) {
       return NextResponse.json(
         {
           success: false,
-          error: "Missing required parameters: collection, document, address, signature, and message",
-        },
-        { status: 400 },
-      );
-    }
-
-    console.log("[API] Verifying signature for address:", address);
-
-    // Verify the signature to ensure the user owns this address
-    const isValid = await verifyMessage({
-      address: address as `0x${string}`,
-      message,
-      signature: signature as `0x${string}`,
-    });
-
-    if (!isValid) {
-      console.log("[API] Invalid signature");
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Invalid signature. Please sign in with your wallet.",
+          error: "Unauthorized. Please sign in with your wallet.",
         },
         { status: 401 },
       );
     }
 
-    console.log("[API] Signature verified. Fetching data for address:", address);
+    const address = session.user.address;
+
+    const body = await request.json();
+    const { collection: collectionName, document: documentId } = body;
+
+    if (!collectionName || !documentId) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Missing required parameters: collection and document",
+        },
+        { status: 400 },
+      );
+    }
+
+    console.log("[API] Authenticated user:", address);
     console.log("[API] Collection:", collectionName, "Document:", documentId);
 
     // Fetch the document
