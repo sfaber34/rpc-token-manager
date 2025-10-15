@@ -7,7 +7,10 @@ export async function POST(request: Request) {
     // Verify session
     const session = await auth();
 
+    console.log("[API] Session check:", session);
+
     if (!session?.user?.address) {
+      console.log("[API] No session found or no address in session");
       return NextResponse.json(
         {
           success: false,

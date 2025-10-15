@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { signIn, useSession } from "next-auth/react";
+import { signIn, signOut, useSession } from "next-auth/react";
 import { SiweMessage } from "siwe";
 import { useAccount, useSignMessage } from "wagmi";
 
@@ -77,6 +77,8 @@ export default function FirebaseTest() {
       setError(null);
 
       console.log("Fetching data with session...");
+      console.log("Session status:", status);
+      console.log("Session data:", session);
 
       // Fetch data using session (no signature needed)
       const response = await fetch("/api/firebase-data", {
@@ -92,8 +94,19 @@ export default function FirebaseTest() {
 
       const result = await response.json();
 
+      console.log("API Response:", result);
+
       if (!result.success) {
-        throw new Error(result.error);
+        // If unauthorized, sign out and show appropriate message
+        if (response.status === 401) {
+          console.log("Unauthorized - signing out");
+          await signOut({ redirect: false });
+          setError("Session expired. Please sign in again.");
+        } else {
+          throw new Error(result.error);
+        }
+        setLoading(false);
+        return;
       }
 
       console.log("Document data:", result.data);
@@ -105,7 +118,35 @@ export default function FirebaseTest() {
       setError(err.message || "Failed to fetch data");
       setLoading(false);
     }
-  }, [collectionName]);
+  }, [collectionName, session, status]);
+
+  // Track if wallet was previously connected to distinguish between "not yet connected" and "disconnected"
+  const [wasConnected, setWasConnected] = useState(false);
+
+  useEffect(() => {
+    if (isConnected) {
+      setWasConnected(true);
+    }
+  }, [isConnected]);
+
+  // Detect wallet address changes and sign out if address doesn't match session
+  useEffect(() => {
+    if (session?.user?.address && address && session.user.address.toLowerCase() !== address.toLowerCase()) {
+      console.log("Wallet address changed, signing out...");
+      signOut({ redirect: false });
+      setData(null);
+      setError("Wallet address changed. Please sign in again.");
+    }
+  }, [address, session]);
+
+  // Detect wallet disconnect and sign out (only if wallet was previously connected)
+  useEffect(() => {
+    if (wasConnected && !isConnected && session) {
+      console.log("Wallet disconnected, signing out...");
+      signOut({ redirect: false });
+      setData(null);
+    }
+  }, [isConnected, session, wasConnected]);
 
   useEffect(() => {
     if (session && status === "authenticated") {
