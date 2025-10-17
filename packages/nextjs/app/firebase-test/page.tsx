@@ -16,7 +16,7 @@ export default function FirebaseTest() {
   const { signMessageAsync } = useSignMessage();
   const { data: session, status } = useSession();
 
-  const handleSignIn = async () => {
+  const handleSignIn = useCallback(async () => {
     try {
       if (!isConnected || !address || !chain) {
         setError("Please connect your wallet first");
@@ -69,7 +69,7 @@ export default function FirebaseTest() {
       setError(err.message || "Failed to sign in");
       setIsSigningIn(false);
     }
-  };
+  }, [isConnected, address, chain, signMessageAsync]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -129,15 +129,32 @@ export default function FirebaseTest() {
     }
   }, [isConnected]);
 
-  // Detect wallet address changes and sign out if address doesn't match session
+  // Detect wallet address changes and automatically re-authenticate
   useEffect(() => {
     if (session?.user?.address && address && session.user.address.toLowerCase() !== address.toLowerCase()) {
-      console.log("Wallet address changed, signing out...");
+      console.log("Wallet address changed, signing out and re-authenticating...");
       signOut({ redirect: false });
       setData(null);
-      setError("Wallet address changed. Please sign in again.");
+      // Will trigger auto sign-in below
     }
   }, [address, session]);
+
+  // Auto sign-in when wallet is connected but no session exists
+  useEffect(() => {
+    const autoSignIn = async () => {
+      // Only auto sign-in if:
+      // 1. Wallet is connected
+      // 2. Not already signed in
+      // 3. Not currently signing in
+      // 4. Chain is available
+      if (isConnected && address && chain && status === "unauthenticated" && !isSigningIn) {
+        console.log("Auto-triggering sign in for connected wallet...");
+        await handleSignIn();
+      }
+    };
+
+    autoSignIn();
+  }, [isConnected, address, chain, status, isSigningIn, handleSignIn]);
 
   // Detect wallet disconnect and sign out (only if wallet was previously connected)
   useEffect(() => {
@@ -175,15 +192,12 @@ export default function FirebaseTest() {
         </div>
       )}
 
-      {isConnected && status === "unauthenticated" && (
+      {isConnected && isSigningIn && (
         <div className="mb-6">
-          <button onClick={handleSignIn} disabled={isSigningIn} className="btn btn-primary btn-lg" type="button">
-            {isSigningIn ? "Signing In..." : "Sign In with Ethereum"}
-          </button>
-          <p className="text-sm text-gray-500 mt-2">
-            You&apos;ll be asked to sign a message to verify wallet ownership. This only needs to be done once per
-            session.
-          </p>
+          <div className="alert alert-info">
+            <span className="loading loading-spinner"></span>
+            <span>Please sign the message in your wallet to continue...</span>
+          </div>
         </div>
       )}
 
