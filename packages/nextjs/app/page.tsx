@@ -1,71 +1,228 @@
 "use client";
 
-import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
 import type { NextPage } from "next";
-import { useAccount } from "wagmi";
-import { BugAntIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
-import { Address } from "~~/components/scaffold-eth";
+import { signIn, signOut, useSession } from "next-auth/react";
+import { SiweMessage } from "siwe";
+import { useAccount, useSignMessage } from "wagmi";
 
 const Home: NextPage = () => {
-  const { address: connectedAddress } = useAccount();
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const collectionName = process.env.NEXT_PUBLIC_FIREBASE_COLLECTION;
+
+  const { address, isConnected, chain } = useAccount();
+  const { signMessageAsync } = useSignMessage();
+  const { data: session, status } = useSession();
+
+  const handleSignIn = useCallback(async () => {
+    try {
+      if (!isConnected || !address || !chain) {
+        setError("Please connect your wallet first");
+        return;
+      }
+
+      setIsSigningIn(true);
+      setError(null);
+
+      // Get nonce from server
+      const nonceRes = await fetch("/api/auth/nonce");
+      const { nonce } = await nonceRes.json();
+
+      // Create SIWE message
+      const message = new SiweMessage({
+        domain: window.location.host,
+        address: address,
+        statement: "Sign in with Ethereum to access your RPC keys.",
+        uri: window.location.origin,
+        version: "1",
+        chainId: chain.id,
+        nonce: nonce,
+      });
+
+      const messageToSign = message.prepareMessage();
+
+      console.log("Requesting signature for SIWE...");
+      console.log("Message to sign:", messageToSign);
+
+      // Request user to sign the SIWE message
+      const signature = await signMessageAsync({ message: messageToSign });
+
+      console.log("Signature received, authenticating...");
+
+      // Authenticate with NextAuth
+      const result = await signIn("credentials", {
+        message: JSON.stringify(message),
+        signature,
+        redirect: false,
+      });
+
+      if (result?.error) {
+        throw new Error(result.error);
+      }
+
+      console.log("Successfully signed in!");
+      setIsSigningIn(false);
+    } catch (err: any) {
+      console.error("Error signing in:", err);
+      setError(err.message || "Failed to sign in");
+      setIsSigningIn(false);
+    }
+  }, [isConnected, address, chain, signMessageAsync]);
+
+  const fetchData = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      console.log("Fetching data with session...");
+      console.log("Session status:", status);
+      console.log("Session data:", session);
+
+      // Fetch data using session (no signature needed)
+      const response = await fetch("/api/firebase-data", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          collection: collectionName,
+          document: "rpcKeys",
+        }),
+      });
+
+      const result = await response.json();
+
+      console.log("API Response:", result);
+
+      if (!result.success) {
+        // If unauthorized, sign out and show appropriate message
+        if (response.status === 401) {
+          console.log("Unauthorized - signing out");
+          await signOut({ redirect: false });
+          setError("Session expired. Please sign in again.");
+        } else {
+          throw new Error(result.error);
+        }
+        setLoading(false);
+        return;
+      }
+
+      console.log("Document data:", result.data);
+
+      setData(result.data);
+      setLoading(false);
+    } catch (err: any) {
+      console.error("Error fetching Firebase data:", err);
+      setError(err.message || "Failed to fetch data");
+      setLoading(false);
+    }
+  }, [collectionName, session, status]);
+
+  // Track if wallet was previously connected to distinguish between "not yet connected" and "disconnected"
+  const [wasConnected, setWasConnected] = useState(false);
+
+  useEffect(() => {
+    if (isConnected) {
+      setWasConnected(true);
+    }
+  }, [isConnected]);
+
+  // Detect wallet address changes and automatically re-authenticate
+  useEffect(() => {
+    if (session?.user?.address && address && session.user.address.toLowerCase() !== address.toLowerCase()) {
+      console.log("Wallet address changed, signing out and re-authenticating...");
+      signOut({ redirect: false });
+      setData(null);
+      // Will trigger auto sign-in below
+    }
+  }, [address, session]);
+
+  // Auto sign-in when wallet is connected but no session exists
+  useEffect(() => {
+    const autoSignIn = async () => {
+      // Only auto sign-in if:
+      // 1. Wallet is connected
+      // 2. Not already signed in
+      // 3. Not currently signing in
+      // 4. Chain is available
+      if (isConnected && address && chain && status === "unauthenticated" && !isSigningIn) {
+        console.log("Auto-triggering sign in for connected wallet...");
+        await handleSignIn();
+      }
+    };
+
+    autoSignIn();
+  }, [isConnected, address, chain, status, isSigningIn, handleSignIn]);
+
+  // Detect wallet disconnect and sign out (only if wallet was previously connected)
+  useEffect(() => {
+    if (wasConnected && !isConnected && session) {
+      console.log("Wallet disconnected, signing out...");
+      signOut({ redirect: false });
+      setData(null);
+    }
+  }, [isConnected, session, wasConnected]);
+
+  useEffect(() => {
+    if (session && status === "authenticated") {
+      fetchData();
+    }
+  }, [session, status, fetchData]);
 
   return (
-    <>
-      <div className="flex items-center flex-col grow pt-10">
-        <div className="px-5">
-          <h1 className="text-center">
-            <span className="block text-2xl mb-2">Welcome to</span>
-            <span className="block text-4xl font-bold">Scaffold-ETH 2</span>
-          </h1>
-          <div className="flex justify-center items-center space-x-2 flex-col">
-            <p className="my-2 font-medium">Connected Address:</p>
-            <Address address={connectedAddress} />
+    <div className="flex items-center flex-col grow pt-10">
+      <div className="px-5 w-full max-w-4xl">
+        <h1 className="text-4xl font-bold mb-6 text-center">My RPC Keys</h1>
+
+        {!isConnected && (
+          <div className="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded mb-4">
+            <strong>Connect Wallet:</strong> Please connect your wallet using the button in the header.
           </div>
+        )}
 
-          <p className="text-center text-lg">
-            Get started by editing{" "}
-            <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
-              packages/nextjs/app/page.tsx
-            </code>
-          </p>
-          <p className="text-center text-lg">
-            Edit your smart contract{" "}
-            <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
-              YourContract.sol
-            </code>{" "}
-            in{" "}
-            <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
-              packages/hardhat/contracts
-            </code>
-          </p>
-        </div>
+        {isConnected && address && (
+          <div className="mb-6">
+            <p className="text-gray-600">
+              Connected: <strong>{address}</strong>
+            </p>
+            <p className="text-sm text-gray-500 mt-2">
+              Session Status: <strong>{status === "authenticated" ? "Signed In ✓" : "Not Signed In"}</strong>
+            </p>
+          </div>
+        )}
 
-        <div className="grow bg-base-300 w-full mt-16 px-8 py-12">
-          <div className="flex justify-center items-center gap-12 flex-col md:flex-row">
-            <div className="flex flex-col bg-base-100 px-10 py-10 text-center items-center max-w-xs rounded-3xl">
-              <BugAntIcon className="h-8 w-8 fill-secondary" />
-              <p>
-                Tinker with your smart contract using the{" "}
-                <Link href="/debug" passHref className="link">
-                  Debug Contracts
-                </Link>{" "}
-                tab.
-              </p>
-            </div>
-            <div className="flex flex-col bg-base-100 px-10 py-10 text-center items-center max-w-xs rounded-3xl">
-              <MagnifyingGlassIcon className="h-8 w-8 fill-secondary" />
-              <p>
-                Explore your local transactions with the{" "}
-                <Link href="/blockexplorer" passHref className="link">
-                  Block Explorer
-                </Link>{" "}
-                tab.
-              </p>
+        {isConnected && isSigningIn && (
+          <div className="mb-6">
+            <div className="alert alert-info">
+              <span className="loading loading-spinner"></span>
+              <span>Please sign the message in your wallet to continue...</span>
             </div>
           </div>
-        </div>
+        )}
+
+        {loading && <div className="text-lg">Loading your API keys...</div>}
+
+        {error && (
+          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+            <strong>Error:</strong> {error}
+          </div>
+        )}
+
+        {!loading && !error && data && (
+          <div>
+            <p className="mb-4 text-sm text-gray-600">Check the browser console (F12) to see the logged data.</p>
+
+            <div className="bg-gray-100 p-4 rounded">
+              <h2 className="text-xl font-semibold mb-3">Your API Keys:</h2>
+              <pre className="bg-white p-4 rounded overflow-auto max-h-96 text-sm">{JSON.stringify(data, null, 2)}</pre>
+            </div>
+          </div>
+        )}
       </div>
-    </>
+    </div>
   );
 };
 

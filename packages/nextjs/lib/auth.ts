@@ -76,7 +76,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     },
   },
   pages: {
-    signIn: "/firebase-test",
+    signIn: "/",
   },
   debug: true,
   trustHost: true,
